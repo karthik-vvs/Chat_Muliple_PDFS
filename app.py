@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
@@ -7,6 +8,12 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.llms import HuggingFacePipeline
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 from htmlTemplates import css, bot_template, user_template
+
+# Load .env for local development
+load_dotenv()
+
+# ✅ Set Hugging Face token from Streamlit secrets
+os.environ["HUGGINGFACEHUB_API_TOKEN"] = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
 
 # Cache embeddings model
 @st.cache_resource(show_spinner=False)
