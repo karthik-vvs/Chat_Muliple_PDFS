@@ -2,6 +2,7 @@ streamlit
 python-dotenv
 PyPDF2
 langchain
+langchain-huggingface
 langchain-community
 transformers
 sentence-transformers
