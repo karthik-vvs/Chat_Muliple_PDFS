@@ -1,105 +1,64 @@
 import os
 import streamlit as st
 import requests
-from dotenv import load_dotenv
+# Removed from local imports: from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_community.llms import HuggingFacePipeline
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-# Assuming htmlTemplates.py contains css, bot_template, user_template
-from htmlTemplates import css, bot_template, user_template 
+# Removed from local imports: HuggingFacePipeline, AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+from htmlTemplates import css, bot_template, user_template
 
 
-# --- Configuration and Environment Detection ---
+# --- Production Model Configuration ---
+EMBEDDING_MODEL_PROD = "sentence-transformers/all-MiniLM-L6-v2"
+LLM_MODEL_PROD = "google/flan-t5-small"
+HF_API_URL = "https://api-inference.huggingface.co/models/"
 
-# 1. Detect environment (used for API key retrieval)
-def is_deployed():
-    """Returns True if running on Streamlit Cloud (no local .env file)."""
-    return os.environ.get("STREAMLIT_RUNTIME", "") != ""
 
-# 2. Variable to force small/production models
-# We set PRODUCTION to True if deployed to ensure resource efficiency.
-# You can override this with an environment variable if needed.
-PRODUCTION = is_deployed()
+# --- Environment Setup ---
 
-# 3. Model Configuration
-# Use smaller, memory-friendly models in production environment
-if PRODUCTION:
-    # Small embedding model for memory constraints on Streamlit Cloud
-    EMBEDDING_MODEL_PROD = "sentence-transformers/all-MiniLM-L6-v2" 
-    # Small T5 for fast API inference
-    LLM_MODEL_PROD = "google/flan-t5-small"
-else:
-    # Larger, high-quality models for local development
-    EMBEDDING_MODEL_DEV = "hkunlp/instructor-xl"
-    # LLM choice comes from the sidebar in main()
-
-# --- Load environment variables and Hugging Face Token ---
-
-load_dotenv()
-if is_deployed():
-    # Use Streamlit Secrets for cloud deployment
-    HF_TOKEN = st.secrets.get("HUGGINGFACEHUB_API_TOKEN") 
-else:
-    # Use os.getenv for local environment
-    HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
-
-if not HF_TOKEN:
-    st.error("HUGGINGFACEHUB_API_TOKEN is not set!")
+# Streamlit Cloud uses st.secrets, no need for dotenv here.
+try:
+    HF_TOKEN = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
+except KeyError:
+    st.error("HUGGINGFACEHUB_API_TOKEN not found in Streamlit secrets.")
     st.stop()
     
-# Set token for HuggingFaceEmbeddings and API calls
 os.environ["HUGGINGFACEHUB_API_TOKEN"] = HF_TOKEN
 
 
-# --- Hugging Face API Call (for deployment) ---
-HF_API_URL = "https://api-inference.huggingface.co/models/"
+# --- Hugging Face API Call (LLM Inference) ---
 
 def query_hf_model(model_name, prompt):
+    """Makes a POST request to the Hugging Face Inference API."""
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     payload = {"inputs": prompt}
     
-    # Use the small model if PRODUCTION is True and no specific model is passed
-    if PRODUCTION and model_name is None:
-        model_name = LLM_MODEL_PROD
-        
     response = requests.post(HF_API_URL + model_name, headers=headers, json=payload)
 
     if response.status_code == 200:
         data = response.json()
         if isinstance(data, list) and "generated_text" in data[0]:
-            return data[0]["generated_text"]
-        return str(data)
+            # The API returns a list of generations
+            return data[0]["generated_text"].strip()
+        return str(data).strip()
     else:
-        return f"❌ Error {response.status_code}: {response.text}"
+        st.error(f"❌ LLM API Error {response.status_code} on model {model_name}: {response.text}")
+        return "Sorry, the AI model encountered an error."
 
 
-# --- Cached Embeddings ---
+# --- Cached Embeddings (Small, Production-Ready Model) ---
+
 @st.cache_resource(show_spinner=False)
 def load_embeddings():
-    if PRODUCTION:
-        model_name = EMBEDDING_MODEL_PROD # all-MiniLM-L6-v2 (small)
-        st.sidebar.info(f"Using Production Embeddings: {model_name.split('/')[-1]}")
-    else:
-        model_name = EMBEDDING_MODEL_DEV # hkunlp/instructor-xl (large)
-        st.sidebar.info(f"Using Development Embeddings: {model_name.split('/')[-1]}")
-        
-    return HuggingFaceEmbeddings(model_name=model_name)
-
-
-# --- Cached Local Model (for development) ---
-@st.cache_resource(show_spinner=False)
-def load_llm(model_name: str):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-    # Using a smaller max_length can help with memory/speed
-    pipe = pipeline("text2text-generation", model=model, tokenizer=tokenizer, max_length=256) 
-    return HuggingFacePipeline(pipeline=pipe)
+    """Loads the memory-efficient embedding model for production."""
+    st.sidebar.info(f"Using Embeddings: {EMBEDDING_MODEL_PROD.split('/')[-1]}")
+    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_PROD)
 
 
 # --- PDF Handling (No changes needed) ---
+
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
@@ -120,13 +79,19 @@ def get_vectorstore(text_chunks, embeddings):
     return FAISS.from_texts(texts=text_chunks, embedding=embeddings)
 
 
-# --- Conversation Chain (No changes needed) ---
-def get_conversation_chain(vectorstore, llm=None, model_name=None, k=5):
+# --- Conversation Chain (API Exclusive) ---
+
+def get_conversation_chain(vectorstore, model_choice, k=5):
+    """
+    Creates an 'ask' function that retrieves context and queries the HF API.
+    llm object is not used in this production version.
+    """
     def ask(question):
+        # 1. Retrieve context
         docs = vectorstore.similarity_search(question, k=k)
         context = " ".join([d.page_content for d in docs])
 
-        # ... (prompt remains the same) ...
+        # 2. Construct RAG prompt
         prompt = f"""
         You are an AI assistant that answers questions based only on the provided context.
         If the answer is not in the context, say "I could not find this in the document."
@@ -140,53 +105,34 @@ def get_conversation_chain(vectorstore, llm=None, model_name=None, k=5):
         Answer in detail:
         """
 
-        if PRODUCTION:
-            # Pass the selected model or use the small default
-            model_to_use = model_name if model_name else LLM_MODEL_PROD 
-            return query_hf_model(model_to_use, prompt)
-        else:
-            result = llm(prompt)
-            if isinstance(result, str):
-                return result.strip() or "I could not find this in the document."
-            return str(result)
+        # 3. Query LLM via API
+        return query_hf_model(model_choice, prompt)
 
     return ask
 
 
 # --- Streamlit App ---
+
 def main():
     st.set_page_config(page_title="Chat with multiple PDFs", page_icon=":books:")
     st.write(css, unsafe_allow_html=True)
 
-    # Load embeddings based on PRODUCTION flag
-    embeddings = load_embeddings() 
+    # Load embeddings (will use the small production model)
+    embeddings = load_embeddings()
 
-    # Sidebar Settings
+    # Sidebar settings
     st.sidebar.subheader("⚙️ Settings")
-
-    # Options available to the user (can include the small model for Prod API use)
-    model_options = ["google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large"]
-
-    # In production, default to the smallest and only allow small/base for better API performance
-    if PRODUCTION:
-        model_choice = st.sidebar.selectbox(
-            "Choose model (API mode)",
-            model_options[:2], # Limit to small and base
-            index=0,
-        )
-        st.sidebar.info("🚀 Running in Streamlit Cloud (API Mode)")
-        llm = None
-    else:
-        model_choice = st.sidebar.selectbox(
-            "Choose model (Local Mode)",
-            model_options,
-            index=1,
-        )
-        st.sidebar.success("🧠 Running Locally (Full Model Mode)")
-        llm = load_llm(model_choice) # Load the selected local model
-
-    context_size = st.sidebar.slider("Number of chunks for context", 2, 8, 5)
-
+    st.sidebar.caption("🚀 Running in Streamlit Cloud (API Mode)")
+    
+    # User can select model for API inference
+    model_choice = st.sidebar.selectbox(
+        "Choose LLM model (API)",
+        [LLM_MODEL_PROD, "google/flan-t5-base"],
+        index=0 # Default to smallest for best performance
+    )
+    st.sidebar.caption(f"LLM API model: {model_choice.split('/')[-1]}")
+    
+    context_size = st.sidebar.slider("Number of chunks for context", min_value=2, max_value=8, value=5)
 
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
@@ -197,8 +143,8 @@ def main():
     user_question = st.text_input("Ask a question about your documents:")
 
     if user_question and st.session_state.conversation:
-        # Conversation is the 'ask' function returned by get_conversation_chain
-        response = st.session_state.conversation(user_question) 
+        with st.spinner("Generating response via API..."):
+            response = st.session_state.conversation(user_question)
 
         st.session_state.chat_history.append(("user", user_question))
         st.session_state.chat_history.append(("bot", response))
@@ -210,11 +156,9 @@ def main():
         else:
             st.write(bot_template.replace("{{MSG}}", msg), unsafe_allow_html=True)
 
-    # Sidebar: PDF Upload
     with st.sidebar:
         st.subheader("📂 Your documents")
         pdf_docs = st.file_uploader("Upload PDFs here", accept_multiple_files=True)
-
         if st.button("Process"):
             if not pdf_docs:
                 st.warning("Please upload at least one PDF first!")
@@ -223,22 +167,16 @@ def main():
             with st.spinner("Processing PDFs and creating vector embeddings..."):
                 raw_text = get_pdf_text(pdf_docs)
                 text_chunks = get_text_chunks(raw_text)
-                
-                # Use the global 'embeddings' loaded at the start
-                vectorstore = get_vectorstore(text_chunks, embeddings) 
+                vectorstore = get_vectorstore(text_chunks, embeddings)
 
-                # The get_conversation_chain logic now depends on the global PRODUCTION flag
-                # (which is True when deployed)
+                # Reset chat history and create chain using the selected API model
                 st.session_state.conversation = get_conversation_chain(
                     vectorstore, 
-                    llm=llm, # will be None in production
-                    model_name=model_choice, # is used for API call in production
+                    model_choice=model_choice, 
                     k=context_size
                 )
-
                 st.session_state.chat_history = []
                 st.success("✅ PDFs processed and vector embeddings created!")
-
 
 if __name__ == "__main__":
     main()

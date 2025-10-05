@@ -124,8 +124,7 @@ def main():
 
     model_choice = st.sidebar.selectbox(
     "Choose model",
-    ["google/flan-t5-small", "google/flan-t5-base",
-    # , "google/flan-t5-large"
+    ["google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large"
     ],
     index=1,
     )
