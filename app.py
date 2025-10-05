@@ -123,9 +123,11 @@ def main():
     st.sidebar.subheader("⚙️ Settings")
 
     model_choice = st.sidebar.selectbox(
-        "Choose model",
-        ["google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large"],
-        index=1,
+    "Choose model",
+    ["google/flan-t5-small", "google/flan-t5-base",
+    # , "google/flan-t5-large"
+    ],
+    index=1,
     )
 
     context_size = st.sidebar.slider("Number of chunks for context", 2, 8, 5)
