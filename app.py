@@ -11,12 +11,11 @@ from htmlTemplates import css, bot_template, user_template
 # CONFIGURATION
 # -----------------------------
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-# Replace small model with API-supported one
-LLM_MODEL = "google/flan-t5-base"
+LLM_MODEL = "google/flan-t5-small"  # Free API-supported model
 HF_API_URL = "https://api-inference.huggingface.co/models/"
 
 # -----------------------------
-# LOAD TOKEN (Streamlit Secrets)
+# LOAD TOKEN FROM STREAMLIT SECRETS
 # -----------------------------
 try:
     HF_TOKEN = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
@@ -27,14 +26,19 @@ except KeyError:
 os.environ["HUGGINGFACEHUB_API_TOKEN"] = HF_TOKEN
 
 # -----------------------------
-# Hugging Face Inference Call
+# Hugging Face API Call
 # -----------------------------
 def query_hf_model(model_name, prompt):
-    """Make a POST request to Hugging Face API."""
+    """Make a POST request to Hugging Face Inference API."""
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     payload = {"inputs": prompt}
 
-    response = requests.post(HF_API_URL + model_name, headers=headers, json=payload)
+    try:
+        response = requests.post(HF_API_URL + model_name, headers=headers, json=payload, timeout=60)
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Request failed: {e}")
+        return "Sorry, the AI model could not be reached."
+
     if response.status_code == 200:
         data = response.json()
         if isinstance(data, list) and "generated_text" in data[0]:
@@ -43,8 +47,11 @@ def query_hf_model(model_name, prompt):
             return data["generated_text"].strip()
         else:
             return str(data)
+    elif response.status_code == 404:
+        st.error(f"❌ Model not found: {model_name}")
+        return "Sorry, this model is not available for API inference."
     else:
-        st.error(f"❌ LLM API Error {response.status_code} — {response.text}")
+        st.error(f"❌ LLM API Error {response.status_code}: {response.text}")
         return "Sorry, the AI model encountered an error."
 
 # -----------------------------
@@ -84,17 +91,17 @@ def get_conversation_chain(vectorstore, model_choice, k=5):
         context = " ".join([d.page_content for d in docs])
 
         prompt = f"""
-        You are an AI assistant that answers questions based only on the given context.
-        If the answer is not in the context, say "I could not find this in the document."
+You are an AI assistant that answers questions based only on the provided context.
+If the answer is not in the context, say "I could not find this in the document."
 
-        Context:
-        {context}
+Context:
+{context}
 
-        Question:
-        {question}
+Question:
+{question}
 
-        Detailed Answer:
-        """
+Detailed Answer:
+"""
         return query_hf_model(model_choice, prompt)
     return ask
 
@@ -112,7 +119,7 @@ def main():
     st.sidebar.subheader("⚙️ Settings")
     model_choice = st.sidebar.selectbox(
         "Choose LLM model (API)",
-        [LLM_MODEL, "mistralai/Mistral-7B-Instruct-v0.2"],
+        [LLM_MODEL],
         index=0
     )
     context_k = st.sidebar.slider("Context Chunks", 2, 8, 5)
@@ -131,10 +138,12 @@ def main():
         st.session_state.chat_history.append(("user", user_question))
         st.session_state.chat_history.append(("bot", answer))
 
+    # Display chat history
     for role, msg in st.session_state.chat_history:
         template = user_template if role == "user" else bot_template
         st.write(template.replace("{{MSG}}", msg), unsafe_allow_html=True)
 
+    # PDF uploader
     with st.sidebar:
         st.subheader("📂 Your PDFs")
         pdfs = st.file_uploader("Upload your PDF files", accept_multiple_files=True)
@@ -147,9 +156,7 @@ def main():
                 text = get_pdf_text(pdfs)
                 chunks = get_text_chunks(text)
                 vectorstore = get_vectorstore(chunks, embeddings)
-                st.session_state.conversation = get_conversation_chain(
-                    vectorstore, model_choice, k=context_k
-                )
+                st.session_state.conversation = get_conversation_chain(vectorstore, model_choice, k=context_k)
                 st.session_state.chat_history = []
                 st.success("✅ PDFs processed successfully!")
 
