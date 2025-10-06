@@ -11,7 +11,7 @@ from htmlTemplates import css, bot_template, user_template
 # CONFIGURATION
 # -----------------------------
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "google/flan-t5-small"  # Free API-supported model
+LLM_MODEL = "facebook/bart-large-cnn"  # Free API-supported model
 HF_API_URL = "https://api-inference.huggingface.co/models/"
 
 # -----------------------------
