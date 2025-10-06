@@ -1,7 +1,7 @@
 import os
 import streamlit as st
-import requests
 from PyPDF2 import PdfReader
+from transformers import pipeline
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -11,61 +11,26 @@ from htmlTemplates import css, bot_template, user_template
 # CONFIGURATION
 # -----------------------------
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "facebook/bart-large-cnn"  # Free API-supported model
-HF_API_URL = "https://api-inference.huggingface.co/models/"
+LLM_MODEL = "google/flan-t5-small"  # Small & CPU-friendly
 
 # -----------------------------
-# LOAD TOKEN FROM STREAMLIT SECRETS
-# -----------------------------
-try:
-    HF_TOKEN = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
-except KeyError:
-    st.error("❌ Add your HUGGINGFACEHUB_API_TOKEN in Streamlit Secrets.")
-    st.stop()
-
-os.environ["HUGGINGFACEHUB_API_TOKEN"] = HF_TOKEN
-
-# -----------------------------
-# Hugging Face API Call
-# -----------------------------
-def query_hf_model(model_name, prompt):
-    """Make a POST request to Hugging Face Inference API."""
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    payload = {"inputs": prompt}
-
-    try:
-        response = requests.post(HF_API_URL + model_name, headers=headers, json=payload, timeout=60)
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Request failed: {e}")
-        return "Sorry, the AI model could not be reached."
-
-    if response.status_code == 200:
-        data = response.json()
-        if isinstance(data, list) and "generated_text" in data[0]:
-            return data[0]["generated_text"].strip()
-        elif isinstance(data, dict) and "generated_text" in data:
-            return data["generated_text"].strip()
-        else:
-            return str(data)
-    elif response.status_code == 404:
-        st.error(f"❌ Model not found: {model_name}")
-        return "Sorry, this model is not available for API inference."
-    else:
-        st.error(f"❌ LLM API Error {response.status_code}: {response.text}")
-        return "Sorry, the AI model encountered an error."
-
-# -----------------------------
-# Cached Embeddings
+# LOCAL MODEL LOADERS
 # -----------------------------
 @st.cache_resource(show_spinner=False)
-def load_embeddings():
+def load_local_models():
+    """Load both embeddings and local text-generation pipeline."""
     st.sidebar.info(f"Using Embeddings: {EMBEDDING_MODEL.split('/')[-1]}")
-    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    st.sidebar.info(f"Using Local Model: {LLM_MODEL.split('/')[-1]}")
+
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    llm_pipeline = pipeline("text2text-generation", model=LLM_MODEL)
+    return embeddings, llm_pipeline
 
 # -----------------------------
-# PDF & Vector Helpers
+# PDF HELPERS
 # -----------------------------
 def get_pdf_text(pdf_docs):
+    """Extract text from multiple PDF files."""
     text = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
@@ -75,24 +40,29 @@ def get_pdf_text(pdf_docs):
                 text += content
     return text
 
+
 def get_text_chunks(text):
+    """Split long text into overlapping chunks for vector search."""
     splitter = CharacterTextSplitter(separator="\n", chunk_size=1000, chunk_overlap=200)
     return splitter.split_text(text)
 
+
 def get_vectorstore(text_chunks, embeddings):
+    """Create a FAISS vector store from text chunks."""
     return FAISS.from_texts(texts=text_chunks, embedding=embeddings)
 
 # -----------------------------
-# Conversation Chain
+# CONVERSATION CHAIN (LOCAL)
 # -----------------------------
-def get_conversation_chain(vectorstore, model_choice, k=5):
+def get_conversation_chain(vectorstore, llm_pipeline, k=5):
+    """Create a simple question-answering chain."""
     def ask(question):
         docs = vectorstore.similarity_search(question, k=k)
         context = " ".join([d.page_content for d in docs])
 
         prompt = f"""
-You are an AI assistant that answers questions based only on the provided context.
-If the answer is not in the context, say "I could not find this in the document."
+You are an AI assistant that answers questions based strictly on the given context.
+If the answer is not in the context, reply: "I could not find this in the document."
 
 Context:
 {context}
@@ -100,9 +70,10 @@ Context:
 Question:
 {question}
 
-Detailed Answer:
+Answer:
 """
-        return query_hf_model(model_choice, prompt)
+        result = llm_pipeline(prompt, max_length=256, do_sample=False)
+        return result[0]["generated_text"].strip()
     return ask
 
 # -----------------------------
@@ -113,17 +84,12 @@ def main():
     st.write(css, unsafe_allow_html=True)
     st.header("Chat with multiple PDFs :books:")
 
-    embeddings = load_embeddings()
+    embeddings, llm_pipeline = load_local_models()
 
-    # Sidebar
+    # Sidebar settings
     st.sidebar.subheader("⚙️ Settings")
-    model_choice = st.sidebar.selectbox(
-        "Choose LLM model (API)",
-        [LLM_MODEL],
-        index=0
-    )
     context_k = st.sidebar.slider("Context Chunks", 2, 8, 5)
-    st.sidebar.caption(f"🧠 Model: {model_choice.split('/')[-1]}")
+    st.sidebar.caption(f"🧠 Model: {LLM_MODEL.split('/')[-1]}")
 
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
@@ -156,7 +122,7 @@ def main():
                 text = get_pdf_text(pdfs)
                 chunks = get_text_chunks(text)
                 vectorstore = get_vectorstore(chunks, embeddings)
-                st.session_state.conversation = get_conversation_chain(vectorstore, model_choice, k=context_k)
+                st.session_state.conversation = get_conversation_chain(vectorstore, llm_pipeline, k=context_k)
                 st.session_state.chat_history = []
                 st.success("✅ PDFs processed successfully!")
 
