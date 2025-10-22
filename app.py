@@ -2,7 +2,7 @@ import os
 import streamlit as st
 from PyPDF2 import PdfReader
 from transformers import pipeline
-from langchain.text_splitter import CharacterTextSplitter
+from langchain_text_splitters import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from htmlTemplates import css, bot_template, user_template
